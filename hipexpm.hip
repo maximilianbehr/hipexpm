@@ -702,9 +702,10 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
 
     for (int k = 0; k < s; ++k) {
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgemm(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, n, &hipexpm_traits<T>::one, U, n, U, n, &hipexpm_traits<T>::zero, d_F, n));
-        CHECK_HIP(hipDeviceSynchronize());
         std::swap(U, d_F);
     }
+
+    CHECK_HIP(hipDeviceSynchronize());
 
     /*-----------------------------------------------------------------------------
      * free memory and destroy hipblas handle
