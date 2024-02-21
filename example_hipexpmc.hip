@@ -92,7 +92,7 @@ int main(void) {
      * compute the approximation of the matrix exponential of A and measure the time
      *-----------------------------------------------------------------------------*/
     auto t0 = std::chrono::high_resolution_clock::now();
-    ret = hipexpmc(d_A, n, d_buffer, h_buffer, d_expmA);
+    ret = hipexpmc(n, d_A, n, d_buffer, h_buffer, d_expmA, n);
     if (ret) {
         fprintf(stderr, "hipexpmc failed with error %d\n", ret);
         fflush(stderr);

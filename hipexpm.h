@@ -32,10 +32,10 @@ int hipexpms_bufferSize(const int n, size_t *d_bufferSize, size_t *h_bufferSize)
 int hipexpmd_bufferSize(const int n, size_t *d_bufferSize, size_t *h_bufferSize);
 int hipexpmc_bufferSize(const int n, size_t *d_bufferSize, size_t *h_bufferSize);
 int hipexpmz_bufferSize(const int n, size_t *d_bufferSize, size_t *h_bufferSize);
-int hipexpms(const float *d_A, const int n, void *d_buffer, void *h_buffer, float *d_expmA);
-int hipexpmd(const double *d_A, const int n, void *d_buffer, void *h_buffer, double *d_expmA);
-int hipexpmc(const hipComplex *d_A, const int n, void *d_buffer, void *h_buffer, hipComplex *d_expmA);
-int hipexpmz(const hipDoubleComplex *d_A, const int n, void *d_buffer, void *h_buffer, hipDoubleComplex *d_expmA);
+int hipexpms(const int n, const float *d_A, const int ldA, void *d_buffer, void *h_buffer, float *d_expmA, const int ldexpmA);
+int hipexpmd(const int n, const double *d_A, const int ldA, void *d_buffer, void *h_buffer, double *d_expmA, const int ldexpmA);
+int hipexpmc(const int n, const hipComplex *d_A, const int ldA, void *d_buffer, void *h_buffer, hipComplex *d_expmA, const int ldexpmA);
+int hipexpmz(const int n, const hipDoubleComplex *d_A, const int ldA, void *d_buffer, void *h_buffer, hipDoubleComplex *d_expmA, const int ldexpmA);
 #ifdef __cplusplus
 }
 #endif
