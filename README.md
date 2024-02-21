@@ -4,7 +4,7 @@
  ![GitHub Release](https://img.shields.io/github/v/release/maximilianbehr/hipexpm?display_name=release&style=flat)
  ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/maximilianbehr/hipexpm/total)
 
-**Version:** 1.0.1
+**Version:** 2.0.0
 
 **Copyright:** Maximilian Behr
 
