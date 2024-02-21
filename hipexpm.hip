@@ -343,22 +343,22 @@ struct hipexpm_traits<hipComplex> {
 };
 
 template <typename T>
-__global__ static void hipexpm_absrowsums(const T *__restrict__ d_A, const int n, double *__restrict__ buffer) {
+__global__ static void hipexpm_absrowsums(const int n, const T *__restrict__ d_A, const int ldA, double *__restrict__ buffer) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     for (int j = i; j < n; j += blockDim.x * gridDim.x) {
         double tmp = 0.;
         for (int k = 0; k < n; ++k) {
-            tmp += hipexpm_traits<T>::abs(d_A[k + j * n]);
+            tmp += hipexpm_traits<T>::abs(d_A[k + j * ldA]);
         }
         buffer[j] = tmp;
     }
 }
 
 template <typename T>
-static int hipexpm_matrix1norm(const T *__restrict__ d_A, const int n, void *d_buffer, double *__restrict__ d_nrmA1) {
+static int hipexpm_matrix1norm(const int n, const T *__restrict__ d_A, const int ldA, void *d_buffer, double *__restrict__ d_nrmA1) {
     *d_nrmA1 = 0.;
     double *buffer = reinterpret_cast<double *>(d_buffer);
-    hipexpm_absrowsums<<<(n + 255) / 256, 256>>>(d_A, n, buffer);
+    hipexpm_absrowsums<<<(n + 255) / 256, 256>>>(n, d_A, ldA, buffer);
     CHECK_HIP(hipPeekAtLastError());
     CHECK_HIP(hipDeviceSynchronize());
     *d_nrmA1 = *(thrust::max_element(thrust::device_pointer_cast(buffer), thrust::device_pointer_cast(buffer + n)));
@@ -366,9 +366,9 @@ static int hipexpm_matrix1norm(const T *__restrict__ d_A, const int n, void *d_b
 }
 
 template <typename T>
-static int hipexpm_parameters(const T *__restrict__ d_A, const int n, void *d_buffer, int *m, int *s) {
+static int hipexpm_parameters(const int n, const T *__restrict__ d_A, const int ldA, void *d_buffer, int *m, int *s) {
     double eta1 = 0.;
-    CHECK_HIPEXPM(hipexpm_matrix1norm(d_A, n, d_buffer, &eta1));
+    CHECK_HIPEXPM(hipexpm_matrix1norm(n, d_A, ldA, d_buffer, &eta1));
     if constexpr (std::is_same<T, double>::value || std::is_same<T, hipDoubleComplex>::value) {
         const double theta[] = {1.495585217958292e-002, 2.539398330063230e-001, 9.504178996162932e-001, 2.97847961257068e+000, 5.371920351148152e+000};
         *s = 0;
@@ -414,29 +414,29 @@ static int hipexpm_parameters(const T *__restrict__ d_A, const int n, void *d_bu
 }
 
 template <typename T>
-__global__ static void setDiag(T *d_A, const int n, const T alpha) {
+__global__ static void setDiag(const int n, T *d_A, const int ldA, const T alpha) {
     int i0 = threadIdx.x + blockIdx.x * blockDim.x;
     int j0 = threadIdx.y + blockIdx.y * blockDim.y;
     for (int i = i0; i < n; i += blockDim.x * gridDim.x) {
         for (int j = j0; j < n; j += blockDim.y * gridDim.y) {
             if (i == j) {
-                d_A[i + j * n] = alpha;
+                d_A[i + j * ldA] = alpha;
             } else {
-                d_A[i + j * n] = hipexpm_traits<T>::zero;
+                d_A[i + j * ldA] = hipexpm_traits<T>::zero;
             }
         }
     }
 }
 
 template <typename T>
-__global__ static void addDiag(T *d_A, const int n, const T alpha) {
+__global__ static void addDiag(const int n, T *d_A, const int ldA, const T alpha) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     for (int j = i; j < n; j += blockDim.x * gridDim.x) {
         if constexpr (std::is_same<T, hipComplex>::value || std::is_same<T, hipDoubleComplex>::value) {
-            d_A[j + j * n].x += alpha.x;
-            d_A[j + j * n].y += alpha.y;
+            d_A[j + j * ldA].x += alpha.x;
+            d_A[j + j * ldA].y += alpha.y;
         } else {
-            d_A[j + j * n] += alpha;
+            d_A[j + j * ldA] += alpha;
         }
     }
 }
@@ -495,7 +495,7 @@ int hipexpmz_bufferSize(const int n, size_t *d_bufferSize, size_t *h_bufferSize)
 }
 
 template <typename T>
-static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T *d_F) {
+static int hipexpm(const int n, const T *d_A, const int ldA, void *d_buffer, void *h_buffer, T *d_F, const int ldF) {
     /*-----------------------------------------------------------------------------
      * kernel launch parameters
      *-----------------------------------------------------------------------------*/
@@ -506,7 +506,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
      * compute the scaling parameter and Pade approximant degree
      *-----------------------------------------------------------------------------*/
     int m, s;
-    CHECK_HIPEXPM(hipexpm_parameters(d_A, n, d_buffer, &m, &s));
+    CHECK_HIPEXPM(hipexpm_parameters(n, d_A, ldA, d_buffer, &m, &s));
     // printf("m = %d, s = %d\n", m, s);
 
     /*-----------------------------------------------------------------------------
@@ -531,8 +531,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
     /*-----------------------------------------------------------------------------
      * rescale T, T = T / 2^s
      *-----------------------------------------------------------------------------*/
-    CHECK_HIP(hipMemcpy(T1, d_A, sizeof(*d_A) * n * n, hipMemcpyDeviceToDevice));
-
+    CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, d_A, ldA, &hipexpm_traits<T>::zero, T1, n, T1, n));
     typename hipexpm_traits<T>::S alpha = 1. / (1 << s);
     if (s != 0) {
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXdscal(hipblasH, n * n, &alpha, T1, 1));
@@ -560,33 +559,33 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
     CHECK_HIP(hipStreamCreate(&streamV));
     if (m == 3) {
         // U = U + c(3)*T2 + c(1)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(U, n, hipexpm_traits<T>::Pade3[1]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(n, U, n, hipexpm_traits<T>::Pade3[1]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamU));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade3[3], T2, n, U, n));
 
         // V = V + c(2)*T2 + c(0)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(V, n, hipexpm_traits<T>::Pade3[0]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(n, V, n, hipexpm_traits<T>::Pade3[0]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamV));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade3[2], T2, n, V, n));
     } else if (m == 5) {
         // U = U + c(5)*T4 + c(3)*T2 + c(1)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(U, n, hipexpm_traits<T>::Pade5[1]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(n, U, n, hipexpm_traits<T>::Pade5[1]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamU));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade5[3], T2, n, U, n));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade5[5], T4, n, U, n));
 
         // V = V + c(4)*T4 + c(2)*T2 + c(0)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(V, n, hipexpm_traits<T>::Pade5[0]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(n, V, n, hipexpm_traits<T>::Pade5[0]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamV));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade5[2], T2, n, V, n));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade5[4], T4, n, V, n));
     } else if (m == 7) {
         // U = U + c(7)*T6 + c(5)*T4 + c(3)*T2 + c(1)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(U, n, hipexpm_traits<T>::Pade7[1]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(n, U, n, hipexpm_traits<T>::Pade7[1]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamU));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade7[3], T2, n, U, n));
@@ -594,7 +593,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade7[7], T6, n, U, n));
 
         // V = V + c(6)*T6 + c(4)*T4 + c(2)*T2 + c(0)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(V, n, hipexpm_traits<T>::Pade7[0]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(n, V, n, hipexpm_traits<T>::Pade7[0]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamV));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade7[2], T2, n, V, n));
@@ -602,7 +601,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade7[6], T6, n, V, n));
     } else if (m == 9) {
         // U = U + c(9)*T8 + c(7)*T6 + c(5)*T4 + c(3)*T2 + c(1)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(U, n, hipexpm_traits<T>::Pade9[1]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamU>>>(n, U, n, hipexpm_traits<T>::Pade9[1]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamU));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade9[3], T2, n, U, n));
@@ -611,7 +610,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade9[9], T8, n, U, n));
 
         // V = V + c(6)*T6 + c(4)*T4 + c(2)*T2 + c(0)*I
-        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(V, n, hipexpm_traits<T>::Pade9[0]);
+        setDiag<<<blocksPerGrid, threadsPerBlock, 0, streamV>>>(n, V, n, hipexpm_traits<T>::Pade9[0]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamV));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade9[2], T2, n, V, n));
@@ -621,7 +620,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
     } else if (m == 13) {
         dim3 grid((n + 15) / 16, (n + 15) / 16);
         //  U = T6*(c(13)*T6 + c(11)*T4 + c(9)*T2) + c(7)*T6 + c(5)*T4 + c(3)*T2 + c(1)*I;
-        setDiag<<<grid, dim3(16, 16), 0, streamU>>>(U, n, hipexpm_traits<T>::Pade13[1]);
+        setDiag<<<grid, dim3(16, 16), 0, streamU>>>(n, U, n, hipexpm_traits<T>::Pade13[1]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamU));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, U, n, &hipexpm_traits<T>::Pade13[3], T2, n, U, n));
@@ -632,7 +631,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgemm(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, n, &hipexpm_traits<T>::one, T6, n, T8, n, &hipexpm_traits<T>::one, U, n));
 
         // V = T6*(c(12)*T6 + c(10)*T4 + c(8)*T2) + c(6)*T6 + c(4)*T4 + c(2)*T2 + c(0)*I;
-        setDiag<<<grid, dim3(16, 16), 0, streamV>>>(V, n, hipexpm_traits<T>::Pade13[0]);
+        setDiag<<<grid, dim3(16, 16), 0, streamV>>>(n, V, n, hipexpm_traits<T>::Pade13[0]);
         CHECK_HIP(hipPeekAtLastError());
         CHECK_HIPBLAS(hipblasSetStream(hipblasH, streamV));
         CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgeam(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, &hipexpm_traits<T>::one, V, n, &hipexpm_traits<T>::Pade13[2], T2, n, V, n));
@@ -688,7 +687,7 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
     CHECK_HIPSOLVER(hipsolverDnDestroy(hipsolverH));
 
     // add identity
-    addDiag<<<blocksPerGrid, threadsPerBlock>>>(U, n, hipexpm_traits<T>::one);
+    addDiag<<<blocksPerGrid, threadsPerBlock>>>(n, U, n, hipexpm_traits<T>::one);
     CHECK_HIP(hipPeekAtLastError());
 
     /*-----------------------------------------------------------------------------
@@ -700,9 +699,12 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
         s--;
     }
 
+    int ldU = n;
+    int ldF_ = ldF;
     for (int k = 0; k < s; ++k) {
-        CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgemm(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, n, &hipexpm_traits<T>::one, U, n, U, n, &hipexpm_traits<T>::zero, d_F, n));
+        CHECK_HIPBLAS(hipexpm_traits<T>::hipblasXgemm(hipblasH, HIPBLAS_OP_N, HIPBLAS_OP_N, n, n, n, &hipexpm_traits<T>::one, U, ldU, U, ldU, &hipexpm_traits<T>::zero, d_F, ldF_));
         std::swap(U, d_F);
+        std::swap(ldU, ldF_);
     }
 
     CHECK_HIP(hipDeviceSynchronize());
@@ -714,18 +716,18 @@ static int hipexpm(const T *d_A, const int n, void *d_buffer, void *h_buffer, T 
     return 0;
 }
 
-int hipexpms(const float *d_A, const int n, void *d_buffer, void *h_buffer, float *d_expmA) {
-    return hipexpm(d_A, n, d_buffer, h_buffer, d_expmA);
+int hipexpms(const int n, const float *d_A, const int ldA, void *d_buffer, void *h_buffer, float *d_expmA, const int ldexpmA) {
+    return hipexpm(n, d_A, ldA, d_buffer, h_buffer, d_expmA, ldexpmA);
 }
 
-int hipexpmd(const double *d_A, const int n, void *d_buffer, void *h_buffer, double *d_expmA) {
-    return hipexpm(d_A, n, d_buffer, h_buffer, d_expmA);
+int hipexpmd(const int n, const double *d_A, const int ldA, void *d_buffer, void *h_buffer, double *d_expmA, const int ldexpmA) {
+    return hipexpm(n, d_A, ldA, d_buffer, h_buffer, d_expmA, ldexpmA);
 }
 
-int hipexpmc(const hipComplex *d_A, const int n, void *d_buffer, void *h_buffer, hipComplex *d_expmA) {
-    return hipexpm(d_A, n, d_buffer, h_buffer, d_expmA);
+int hipexpmc(const int n, const hipComplex *d_A, const int ldA, void *d_buffer, void *h_buffer, hipComplex *d_expmA, const int ldexpmA) {
+    return hipexpm(n, d_A, ldA, d_buffer, h_buffer, d_expmA, ldexpmA);
 }
 
-int hipexpmz(const hipDoubleComplex *d_A, const int n, void *d_buffer, void *h_buffer, hipDoubleComplex *d_expmA) {
-    return hipexpm(d_A, n, d_buffer, h_buffer, d_expmA);
+int hipexpmz(const int n, const hipDoubleComplex *d_A, const int ldA, void *d_buffer, void *h_buffer, hipDoubleComplex *d_expmA, const int ldexpmA) {
+    return hipexpm(n, d_A, ldA, d_buffer, h_buffer, d_expmA, ldexpmA);
 }
