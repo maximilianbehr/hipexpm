@@ -554,6 +554,7 @@ static int hipexpm(const int n, const T *d_A, const int ldA, void *d_buffer, voi
     /*-----------------------------------------------------------------------------
      * compute U and V for the Pade approximant independently on different streams
      *-----------------------------------------------------------------------------*/
+    CHECK_HIP(hipDeviceSynchronize());
     hipStream_t streamU, streamV;
     CHECK_HIP(hipStreamCreate(&streamU));
     CHECK_HIP(hipStreamCreate(&streamV));
